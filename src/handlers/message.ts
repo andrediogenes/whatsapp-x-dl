@@ -5,13 +5,24 @@ import {
   type MessageUpsertType,
 } from '@whiskeysockets/baileys';
 
-// Depois que o bot manda "pong" num self-chat, o próprio Baileys dispara um
-// messages.upsert para essa mensagem enviada (fromMe: true, mesmo JID do self-chat).
-// Sem essa guarda, esse eco reentra no handler e vira um loop infinito de pong.
-// Por isso registramos quando o bot mandou algo pra um JID e ignoramos qualquer
-// "mensagem própria" que chegue logo em seguida nesse mesmo chat.
-const lastBotSendAt = new Map<string, number>();
-const ECHO_GUARD_MS = 4000;
+// Em self-chat (e especialmente via @lid), o WhatsApp costuma reentregar a mesma
+// mensagem várias vezes até a decriptação vingar, e o próprio "pong" que o bot manda
+// também ecoa de volta como mensagem "recebida" (fromMe: true, mesmo JID). Uma guarda
+// por tempo não é confiável aqui porque os reenvios não têm intervalo fixo (já vimos
+// retries chegarem com mais de 5s de diferença). Por isso rastreamos por ID:
+// - handledMessageIds: mensagens às quais já respondemos, pra ignorar reentregas
+// - botSentMessageIds: mensagens que o próprio bot mandou, pra reconhecer o próprio eco
+const handledMessageIds = new Set<string>();
+const botSentMessageIds = new Set<string>();
+const MAX_TRACKED_IDS = 500;
+
+function trackId(set: Set<string>, id: string): void {
+  set.add(id);
+  if (set.size > MAX_TRACKED_IDS) {
+    const oldest = set.values().next().value;
+    if (oldest !== undefined) set.delete(oldest);
+  }
+}
 
 // Só reagimos a tipos de conteúdo que um humano de fato escreveu/enviou. Sem essa
 // lista, mensagens de protocolo (sync de app state, notificação de histórico,
@@ -48,29 +59,34 @@ export async function handleIncomingMessages(
   // de histórico (ex.: ao reconectar) e não devem gerar resposta.
   if (type !== 'notify') return;
 
-  const ownJid = sock.user ? jidNormalizedUser(sock.user.id) : undefined;
+  // A mesma conta é representada por dois JIDs diferentes dependendo do contexto:
+  // o formato telefone (@s.whatsapp.net) e o formato LID (@lid, mais novo). Mensagens
+  // de self-chat chegam no formato LID mesmo quando sock.user.id reporta o formato
+  // telefone — por isso precisamos comparar contra os dois.
+  const ownJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : undefined;
+  const ownLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : undefined;
 
   for (const msg of messages) {
     const remoteJid = msg.key.remoteJid;
+    const msgId = msg.key.id;
+    const isFromMe = msg.key.fromMe === true;
+    const isSelfChat = remoteJid !== undefined && (remoteJid === ownJid || remoteJid === ownLid);
+
     if (msg.messageStubType) continue; // evento de sistema (ex.: notificação de segurança), não é mensagem
-    if (!hasRealContent(msg.message) || !remoteJid) continue;
+    if (!hasRealContent(msg.message) || !remoteJid || !msgId) continue;
     if (remoteJid === 'status@broadcast') continue;
     if (remoteJid.endsWith('@g.us')) continue; // ignora grupos — só conversa privada
+    if (botSentMessageIds.has(msgId)) continue; // é o eco de um "pong" que o próprio bot mandou
+    if (handledMessageIds.has(msgId)) continue; // já respondemos a essa mensagem (reentrega do WhatsApp)
 
     // Ignora mensagens enviadas pelo próprio bot, exceto no chat "Mensagem para você"
     // (mesmo JID do bot), que é como uma conta única costuma se auto-testar.
-    const isFromMe = msg.key.fromMe === true;
-    const isSelfChat = ownJid !== undefined && remoteJid === ownJid;
     if (isFromMe && !isSelfChat) continue;
 
-    if (isSelfChat && isFromMe) {
-      const lastSend = lastBotSendAt.get(remoteJid);
-      if (lastSend !== undefined && Date.now() - lastSend < ECHO_GUARD_MS) continue; // provável eco do próprio pong
-    }
-
-    lastBotSendAt.set(remoteJid, Date.now());
+    trackId(handledMessageIds, msgId);
     try {
-      await sock.sendMessage(remoteJid, { text: 'pong' });
+      const sent = await sock.sendMessage(remoteJid, { text: 'pong' });
+      if (sent?.key?.id) trackId(botSentMessageIds, sent.key.id);
     } catch (err) {
       console.error(`Falha ao responder ${remoteJid}:`, err);
     }
