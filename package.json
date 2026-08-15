@@ -1,0 +1,27 @@
+{
+  "name": "whatsapp-x-dl",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bot pessoal de WhatsApp que baixa vídeos do X/Twitter (fase 1: conexão e echo)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
