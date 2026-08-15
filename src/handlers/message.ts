@@ -84,7 +84,7 @@ export async function handleIncomingMessages(
     if (!hasRealContent(msg.message) || !remoteJid || !msgId) continue;
     if (remoteJid === 'status@broadcast') continue;
     if (remoteJid.endsWith('@g.us')) continue; // ignora grupos — só conversa privada
-    if (botSentMessageIds.has(msgId)) continue; // é o eco de um "pong" que o próprio bot mandou
+    if (botSentMessageIds.has(msgId)) continue; // é o eco de uma resposta que o próprio bot mandou
     if (handledMessageIds.has(msgId)) continue; // já respondemos a essa mensagem (reentrega do WhatsApp)
 
     // Ignora mensagens enviadas pelo próprio bot, exceto no chat "Mensagem para você"
