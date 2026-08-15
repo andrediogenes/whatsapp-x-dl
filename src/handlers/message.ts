@@ -4,6 +4,7 @@ import {
   type WAMessage,
   type MessageUpsertType,
 } from '@whiskeysockets/baileys';
+import { extractTweetId } from '../utils/url.js';
 
 // Em self-chat (e especialmente via @lid), o WhatsApp costuma reentregar a mesma
 // mensagem várias vezes até a decriptação vingar, e o próprio "pong" que o bot manda
@@ -46,9 +47,16 @@ function hasRealContent(message: WAMessage['message']): boolean {
   return REAL_CONTENT_KEYS.some((key) => key in message);
 }
 
+function extractText(message: WAMessage['message']): string | undefined {
+  if (!message) return undefined;
+  return message.conversation ?? message.extendedTextMessage?.text ?? undefined;
+}
+
 /**
- * Fase 1: qualquer mensagem privada recebida gera um "pong" de volta.
- * Ainda sem roteamento por conteúdo — isso entra na fase 2 (detecção de link do X).
+ * Fase 2: mensagens privadas com link de x.com/twitter.com/t.co recebem de volta
+ * o ID do tweet extraído. Mensagens sem link reconhecível ficam em silêncio — o
+ * "pong" da fase 1 era só validação de conexão, não o comportamento final do bot.
+ * Ainda sem download — isso entra na fase 3.
  */
 export async function handleIncomingMessages(
   sock: WASocket,
@@ -83,9 +91,13 @@ export async function handleIncomingMessages(
     // (mesmo JID do bot), que é como uma conta única costuma se auto-testar.
     if (isFromMe && !isSelfChat) continue;
 
+    const text = extractText(msg.message);
+    const tweetId = text ? await extractTweetId(text) : undefined;
+    if (!tweetId) continue; // sem link do X reconhecível, ignora
+
     trackId(handledMessageIds, msgId);
     try {
-      const sent = await sock.sendMessage(remoteJid, { text: 'pong' });
+      const sent = await sock.sendMessage(remoteJid, { text: tweetId });
       if (sent?.key?.id) trackId(botSentMessageIds, sent.key.id);
     } catch (err) {
       console.error(`Falha ao responder ${remoteJid}:`, err);
