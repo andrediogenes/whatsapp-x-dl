@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
 import {
   jidNormalizedUser,
   type WASocket,
@@ -5,6 +7,7 @@ import {
   type MessageUpsertType,
 } from '@whiskeysockets/baileys';
 import { extractTweetId } from '../utils/url.js';
+import { downloadTweetVideo, NoVideoError } from '../services/twitter.js';
 
 // Em self-chat (e especialmente via @lid), o WhatsApp costuma reentregar a mesma
 // mensagem várias vezes até a decriptação vingar, e o próprio "pong" que o bot manda
@@ -53,10 +56,9 @@ function extractText(message: WAMessage['message']): string | undefined {
 }
 
 /**
- * Fase 2: mensagens privadas com link de x.com/twitter.com/t.co recebem de volta
- * o ID do tweet extraído. Mensagens sem link reconhecível ficam em silêncio — o
- * "pong" da fase 1 era só validação de conexão, não o comportamento final do bot.
- * Ainda sem download — isso entra na fase 3.
+ * Fase 3: além de extrair o ID, baixa o vídeo/GIF do tweet via yt-dlp para tmp/
+ * e informa o resultado. Mensagens sem link reconhecível ficam em silêncio.
+ * Ainda sem enviar o arquivo como mídia nem limpar tmp/ — isso entra nas fases 4 e 5.
  */
 export async function handleIncomingMessages(
   sock: WASocket,
@@ -96,8 +98,24 @@ export async function handleIncomingMessages(
     if (!tweetId) continue; // sem link do X reconhecível, ignora
 
     trackId(handledMessageIds, msgId);
+
+    let replyText: string;
     try {
-      const sent = await sock.sendMessage(remoteJid, { text: tweetId });
+      const filePath = await downloadTweetVideo(tweetId);
+      const { size } = await stat(filePath);
+      const sizeMB = (size / (1024 * 1024)).toFixed(1);
+      replyText = `ID: ${tweetId}\nBaixado: ${path.basename(filePath)} (${sizeMB} MB)`;
+    } catch (err) {
+      if (err instanceof NoVideoError) {
+        replyText = `ID: ${tweetId}\nEsse tweet não tem vídeo.`;
+      } else {
+        console.error(`Falha ao baixar tweet ${tweetId}:`, err);
+        replyText = `ID: ${tweetId}\nFalha ao baixar o vídeo.`;
+      }
+    }
+
+    try {
+      const sent = await sock.sendMessage(remoteJid, { text: replyText });
       if (sent?.key?.id) trackId(botSentMessageIds, sent.key.id);
     } catch (err) {
       console.error(`Falha ao responder ${remoteJid}:`, err);
