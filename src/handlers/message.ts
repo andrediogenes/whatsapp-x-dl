@@ -1,4 +1,3 @@
-import { stat, unlink } from 'node:fs/promises';
 import {
   jidNormalizedUser,
   type WASocket,
@@ -6,8 +5,7 @@ import {
   type MessageUpsertType,
 } from '@whiskeysockets/baileys';
 import { extractTweetId } from '../utils/url.js';
-import { downloadTweetVideo, NoVideoError } from '../services/twitter.js';
-import { compressVideo } from '../services/media.js';
+import { prepareTweetVideo, NoVideoError } from '../services/twitter.js';
 
 // Acima disso o WhatsApp deixa de tratar o vídeo como mídia inline de forma
 // confiável; nesse caso tentamos recomprimir e, se ainda assim não couber,
@@ -61,55 +59,36 @@ function extractText(message: WAMessage['message']): string | undefined {
 }
 
 /**
- * Baixa o vídeo do tweet, envia como mídia (com fallback pra documento se muito
- * grande) e limpa os arquivos temporários no final, dê certo ou não o envio.
+ * Baixa o vídeo do tweet (via prepareTweetVideo, compartilhado com outros
+ * adaptadores de mensageria), envia como mídia — com fallback pra documento
+ * se muito grande — e limpa os arquivos temporários no final, dê certo ou não.
  */
 async function sendTweetVideo(
   sock: WASocket,
   remoteJid: string,
   tweetId: string,
 ): Promise<Awaited<ReturnType<WASocket['sendMessage']>>> {
-  let downloadedPath: string | undefined;
-  let compressedPath: string | undefined;
-
   try {
-    downloadedPath = await downloadTweetVideo(tweetId);
-    let sendPath = downloadedPath;
-    let { size } = await stat(sendPath);
-
-    if (size > MAX_INLINE_VIDEO_BYTES) {
-      try {
-        compressedPath = await compressVideo(sendPath);
-        const compressedStat = await stat(compressedPath);
-        if (compressedStat.size < size) {
-          sendPath = compressedPath;
-          size = compressedStat.size;
-        }
-      } catch (err) {
-        console.error(`Falha ao recomprimir vídeo do tweet ${tweetId}:`, err);
-        // segue com o arquivo original; se ainda estiver grande, cai no fallback de documento
+    const video = await prepareTweetVideo(tweetId, MAX_INLINE_VIDEO_BYTES);
+    try {
+      if (video.size > MAX_INLINE_VIDEO_BYTES) {
+        return await sock.sendMessage(remoteJid, {
+          document: { url: video.path },
+          mimetype: 'video/mp4',
+          fileName: `${tweetId}.mp4`,
+          caption: `ID: ${tweetId} (arquivo grande, enviado como documento)`,
+        });
       }
+      return await sock.sendMessage(remoteJid, { video: { url: video.path }, caption: `ID: ${tweetId}` });
+    } finally {
+      await video.cleanup();
     }
-
-    if (size > MAX_INLINE_VIDEO_BYTES) {
-      return await sock.sendMessage(remoteJid, {
-        document: { url: sendPath },
-        mimetype: 'video/mp4',
-        fileName: `${tweetId}.mp4`,
-        caption: `ID: ${tweetId} (arquivo grande, enviado como documento)`,
-      });
-    }
-
-    return await sock.sendMessage(remoteJid, { video: { url: sendPath }, caption: `ID: ${tweetId}` });
   } catch (err) {
     if (err instanceof NoVideoError) {
       return await sock.sendMessage(remoteJid, { text: `ID: ${tweetId}\nEsse tweet não tem vídeo.` });
     }
     console.error(`Falha no download/envio do tweet ${tweetId}:`, err);
     return await sock.sendMessage(remoteJid, { text: `ID: ${tweetId}\nFalha ao baixar/enviar o vídeo.` });
-  } finally {
-    if (downloadedPath) await unlink(downloadedPath).catch(() => {});
-    if (compressedPath) await unlink(compressedPath).catch(() => {});
   }
 }
 
