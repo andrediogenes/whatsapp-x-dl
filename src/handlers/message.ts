@@ -1,5 +1,4 @@
-import { stat } from 'node:fs/promises';
-import path from 'node:path';
+import { stat, unlink } from 'node:fs/promises';
 import {
   jidNormalizedUser,
   type WASocket,
@@ -8,6 +7,12 @@ import {
 } from '@whiskeysockets/baileys';
 import { extractTweetId } from '../utils/url.js';
 import { downloadTweetVideo, NoVideoError } from '../services/twitter.js';
+import { compressVideo } from '../services/media.js';
+
+// Acima disso o WhatsApp deixa de tratar o vídeo como mídia inline de forma
+// confiável; nesse caso tentamos recomprimir e, se ainda assim não couber,
+// mandamos como documento (limite bem maior, só perde a prévia inline).
+const MAX_INLINE_VIDEO_BYTES = 16 * 1024 * 1024;
 
 // Em self-chat (e especialmente via @lid), o WhatsApp costuma reentregar a mesma
 // mensagem várias vezes até a decriptação vingar, e o próprio "pong" que o bot manda
@@ -56,9 +61,62 @@ function extractText(message: WAMessage['message']): string | undefined {
 }
 
 /**
- * Fase 3: além de extrair o ID, baixa o vídeo/GIF do tweet via yt-dlp para tmp/
- * e informa o resultado. Mensagens sem link reconhecível ficam em silêncio.
- * Ainda sem enviar o arquivo como mídia nem limpar tmp/ — isso entra nas fases 4 e 5.
+ * Baixa o vídeo do tweet, envia como mídia (com fallback pra documento se muito
+ * grande) e limpa os arquivos temporários no final, dê certo ou não o envio.
+ */
+async function sendTweetVideo(
+  sock: WASocket,
+  remoteJid: string,
+  tweetId: string,
+): Promise<Awaited<ReturnType<WASocket['sendMessage']>>> {
+  let downloadedPath: string | undefined;
+  let compressedPath: string | undefined;
+
+  try {
+    downloadedPath = await downloadTweetVideo(tweetId);
+    let sendPath = downloadedPath;
+    let { size } = await stat(sendPath);
+
+    if (size > MAX_INLINE_VIDEO_BYTES) {
+      try {
+        compressedPath = await compressVideo(sendPath);
+        const compressedStat = await stat(compressedPath);
+        if (compressedStat.size < size) {
+          sendPath = compressedPath;
+          size = compressedStat.size;
+        }
+      } catch (err) {
+        console.error(`Falha ao recomprimir vídeo do tweet ${tweetId}:`, err);
+        // segue com o arquivo original; se ainda estiver grande, cai no fallback de documento
+      }
+    }
+
+    if (size > MAX_INLINE_VIDEO_BYTES) {
+      return await sock.sendMessage(remoteJid, {
+        document: { url: sendPath },
+        mimetype: 'video/mp4',
+        fileName: `${tweetId}.mp4`,
+        caption: `ID: ${tweetId} (arquivo grande, enviado como documento)`,
+      });
+    }
+
+    return await sock.sendMessage(remoteJid, { video: { url: sendPath }, caption: `ID: ${tweetId}` });
+  } catch (err) {
+    if (err instanceof NoVideoError) {
+      return await sock.sendMessage(remoteJid, { text: `ID: ${tweetId}\nEsse tweet não tem vídeo.` });
+    }
+    console.error(`Falha no download/envio do tweet ${tweetId}:`, err);
+    return await sock.sendMessage(remoteJid, { text: `ID: ${tweetId}\nFalha ao baixar/enviar o vídeo.` });
+  } finally {
+    if (downloadedPath) await unlink(downloadedPath).catch(() => {});
+    if (compressedPath) await unlink(compressedPath).catch(() => {});
+  }
+}
+
+/**
+ * Fase 4: baixa o vídeo do tweet e envia de volta como mídia, com fallback pra
+ * documento se passar do limite de tamanho, e limpa tmp/ depois. Mensagens sem
+ * link reconhecível ficam em silêncio.
  */
 export async function handleIncomingMessages(
   sock: WASocket,
@@ -99,23 +157,8 @@ export async function handleIncomingMessages(
 
     trackId(handledMessageIds, msgId);
 
-    let replyText: string;
     try {
-      const filePath = await downloadTweetVideo(tweetId);
-      const { size } = await stat(filePath);
-      const sizeMB = (size / (1024 * 1024)).toFixed(1);
-      replyText = `ID: ${tweetId}\nBaixado: ${path.basename(filePath)} (${sizeMB} MB)`;
-    } catch (err) {
-      if (err instanceof NoVideoError) {
-        replyText = `ID: ${tweetId}\nEsse tweet não tem vídeo.`;
-      } else {
-        console.error(`Falha ao baixar tweet ${tweetId}:`, err);
-        replyText = `ID: ${tweetId}\nFalha ao baixar o vídeo.`;
-      }
-    }
-
-    try {
-      const sent = await sock.sendMessage(remoteJid, { text: replyText });
+      const sent = await sendTweetVideo(sock, remoteJid, tweetId);
       if (sent?.key?.id) trackId(botSentMessageIds, sent.key.id);
     } catch (err) {
       console.error(`Falha ao responder ${remoteJid}:`, err);
