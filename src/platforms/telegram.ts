@@ -7,10 +7,9 @@ import { prepareTweetVideo, NoVideoError } from '../services/twitter.js';
 const MAX_INLINE_VIDEO_BYTES = 45 * 1024 * 1024;
 
 /**
- * Envia o vídeo do tweet pro chat, com o mesmo fallback de compressão do
- * adaptador de WhatsApp. Se mesmo após comprimir o arquivo continuar grande
- * demais pro limite do Telegram, avisa em vez de tentar enviar (o Bot API
- * simplesmente rejeitaria o upload).
+ * Envia o vídeo do tweet pro chat. Se mesmo após comprimir o arquivo continuar
+ * grande demais pro limite do Telegram, avisa em vez de tentar enviar (o Bot
+ * API simplesmente rejeitaria o upload).
  */
 async function sendTweetVideo(ctx: { reply: (text: string) => Promise<unknown>; replyWithVideo: (file: InputFile, opts: { caption: string }) => Promise<unknown> }, tweetId: string): Promise<void> {
   try {

@@ -4,9 +4,6 @@ node_modules/
 # build output
 dist/
 
-# credenciais de sessão do Baileys — acesso total à conta do WhatsApp, nunca commitar
-auth/
-
 # downloads temporários
 tmp/
 

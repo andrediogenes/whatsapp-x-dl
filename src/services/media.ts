@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 /**
  * Recomprime um vídeo via ffmpeg (reduz resolução e bitrate) numa única passada
  * de "melhor esforço" — não garante atingir um tamanho exato, só tenta reduzir
- * o suficiente pra caber no limite de mídia inline do WhatsApp.
+ * o suficiente pra caber no limite de mídia inline da plataforma de destino.
  */
 export function compressVideo(inputPath: string): Promise<string> {
   const outputPath = inputPath.replace(/\.[^./]+$/, '') + '.compressed.mp4';

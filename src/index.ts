@@ -1,8 +1,4 @@
 import { startTelegram } from './platforms/telegram.js';
-// WhatsApp continua disponível (funciona, mas self-chat tem sessão de
-// criptografia instável demais pra testar com conforto) — trocamos pra
-// Telegram por enquanto. Pra voltar: import { startWhatsApp } from
-// './platforms/whatsapp.js' e chame no lugar de startTelegram().
 
 try {
   process.loadEnvFile('.env');
